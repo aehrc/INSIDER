@@ -54,7 +54,7 @@ def setup(kmerDf):
     ## *** Perform other filtering / processing steps including:
     ## ***   * Repetitive (i.e., low complexity) Kmers
     ## **********
-    kmerDf = transform.filter.removeRepetitiveKmers(kmerDf)
+    # kmerDf = transform.filter.removeRepetitiveKmers(kmerDf)
 
     ## **********
     ## *** Filtering Kmers will ultimately change the counts, so we need to
