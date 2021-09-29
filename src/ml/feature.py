@@ -15,7 +15,7 @@ to the perplexity.
 In the same way, the similarity between pairs of vectors in low dimensional
 space is measured using a Student t-distribution (i.e., Cauchy distribution).
 
-The above probability distributions are then compared by measuring the 
+The above probability distributions are then compared by measuring the
 KL divergence. A relatively low KL divergence indicates that two distributions
 are similar. However, unlike distance metrics, KL divergence is not a symmetric
 measure.
@@ -43,14 +43,11 @@ clusters.
 
 # Standard library imports
 import os
-import math
 import sys
 
 # External imports
 import pandas as pd
 import holoviews as hv
-from holoviews import opts
-import matplotlib.pyplot as plt
 from pyspark.sql import SparkSession
 import pyspark.sql.functions as sparkFsql
 import pyspark.ml.functions as sparkFml
@@ -64,16 +61,32 @@ from sklearn import random_projection
 
 # Internal imports
 from .. import kmer
-from .. import plot
-from ..util import spark
 from .constants import *
-from .common import getParameterGrid
 
 #------------------- Constants ------------------------------#
 
 #------------------- Public Classes & Functions -------------#
 
-def sparkReduce(kmerCount, **kwargs):
+def sklearnReduce(kmerCount, frMethod, **kwargs):
+    algo = _getAlgorithm(frMethod, **kwargs)
+
+    ## Perform feature reduction
+    comps = algo.fit_transform(kmerCount)
+    comps = _formatComponents(comps)
+    return comps
+
+def fastTsneReduce(kmerCount, **kwargs):
+    ## We need a better way of doing this
+    sys.path.append('../../software/FIt-SNE/')
+    # p = os.path.join(os.environ['SCRATCH1DIR'], 'FIt-SNE')
+    # sys.path.append(p)
+    from fast_tsne import fast_tsne
+
+    comps = fast_tsne(kmerCount, **kwargs)
+    comps = _formatComponents(comps)
+    return comps
+
+def sparkPcaReduce(kmerCount, **kwargs):
     ss = SparkSession.getActiveSession()
     if (ss is None):
         raise EnvironmentError("Must have an active Spark session")
@@ -102,23 +115,28 @@ def sparkReduce(kmerCount, **kwargs):
     comps.columns = colNames
     return comps
 
-def sklearnReduce(kmerCount, frMethod, **kwargs):
-    algo = _getAlgorithm(frMethod, **kwargs)
+def sparkIncrementalPcaReduce(kmerCount, **kwargs):
+    ss = SparkSession.getActiveSession()
+    if (ss is None):
+        raise EnvironmentError("Must have an active Spark session")
 
-    ## Perform feature reduction
-    comps = algo.fit_transform(kmerCount)
-    comps = _formatComponents(comps)
-    return comps
+    ipca = decomposition.IncrementalPCA(**kwargs)
 
-def fastTsneReduce(kmerCount, **kwargs):
-    ## We need a better way of doing this
-    sys.path.append('../../software/FIt-SNE/')
-    # p = os.path.join(os.environ['SCRATCH1DIR'], 'FIt-SNE')
-    # sys.path.append(p)
-    from fast_tsne import fast_tsne
+    ## Fit-transform
+    for x in kmerCount.toLocalIterator():
+        ipca.partial_fit(x)
+    comps = kmerCount.map(lambda x: ipca.transform(x))
 
-    comps = fast_tsne(kmerCount, **kwargs)
-    comps = _formatComponents(comps)
+    ## Scale values
+    scaler = preprocessing.MinMaxScaler((0, 1))
+    for x in comps.toLocalIterator():
+        scaler.partial_fit(x)
+
+    comps = comps.map(lambda x: scaler.transform(x)) \
+        .map(_formatComponents)
+
+    print("Explained Variance\t{}".format(ipca.explained_variance_))
+    print("Explained Variance Ratio\t{}".format(ipca.explained_variance_ratio_))
     return comps
 
 def visualisePcaPerformance(kmerCount, **kwargs):

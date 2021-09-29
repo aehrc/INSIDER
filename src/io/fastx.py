@@ -7,15 +7,13 @@
 # Standard library imports
 import gzip
 import itertools
-import os
-import re
 from pathlib import Path
 
 # External imports
 from Bio import SeqIO
 
 # Internal imports
-from .common import isZFile, createDirIfNone, removeFileIfExists
+from .common import isZFile, toZFile
 
 #------------------- Constants ------------------------------#
 
@@ -29,12 +27,16 @@ def read(*filepaths, **kwargs):
     seqRecs = itertools.chain(*seqRecs)
     return seqRecs
 
-def write(filepath, seqRecords, fastXtype):
-    ## Create DIR if it doesnt exist
-    outputDir = os.path.dirname(filepath)
-    createDirIfNone(outputDir)
-    removeFileIfExists(filepath)
+def write(filepath, seqRecords, fastXtype, compress=False):
+    ## Create DIR & FILE they don't exist
+    p = Path(filepath)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.unlink() if p.exists() else None
+
+    ## Write file
     SeqIO.write(seqRecords, filepath, fastXtype)
+    if (compress):
+        toZFile(filepath)
 
 #------------------- Private Classes & Functions ------------#
 

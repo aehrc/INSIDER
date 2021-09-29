@@ -8,130 +8,94 @@
 import zlib
 
 # External imports
-import numpy as np
 import pandas as pd
-import pyspark.sql.types as sparkT
 import pyspark.sql.functions as sparkF
+import pyspark.sql.types as sparkT
+from pyspark.sql import SparkSession
 
 # Internal imports
-from ..constants import *
-from ..common import *
+from .common import *
 
 #------------------- Constants ------------------------------#
 
 #------------------- Public Classes & Functions -------------#
 
+def countsToProbabilities(kmerSdf):
+    ss = SparkSession.getActiveSession()
+    if (ss is None):
+        raise EnvironmentError("Must have an active Spark session")
+
+    kmerSdf = kmerSdf.withColumn(COUNT_COL_NAME,
+        sparkF.col(COUNT_COL_NAME).cast(sparkT.FloatType()))
+    kmerSdf = kmerSdf.repartition(kmerSdf.rdd.getNumPartitions(), SEQID_COL_NAME)
+    kmerSdf = kmerSdf.groupby(SEQID_COL_NAME) \
+        .applyInPandas(_countsToProbabilities, schema=kmerSdf.schema)
+    return kmerSdf
+
+def countsToNormalised(kmerSdf):
+    ## Normalise counts according to Wang et al. 2005
+    def _f(key, df, t):
+        df   = _countsToProbabilities(df)
+        df[COUNT_COL_NAME] = df[COUNT_COL_NAME] * t
+        return df
+
+    ss = SparkSession.getActiveSession()
+    if (ss is None):
+        raise EnvironmentError("Must have an active Spark session")
+
+    ## Calculate the total number of possible Kmers
+    kmer = kmerSdf.select(KMER_COL_NAME).first()[0]
+    t    = getExpectedTotal(kmer)
+
+    kmerSdf = kmerSdf.withColumn(COUNT_COL_NAME,
+        sparkF.col(COUNT_COL_NAME).cast(sparkT.FloatType()))
+    kmerSdf = kmerSdf.repartition(kmerSdf.rdd.getNumPartitions(), SEQID_COL_NAME)
+    kmerSdf = kmerSdf.groupby(SEQID_COL_NAME) \
+        .applyInPandas(lambda x, y: _f(x, y, t), schema=kmerSdf.schema)
+    return kmerSdf
+
 @sparkF.pandas_udf(returnType=sparkT.FloatType())
-def countsToPercentages(counts: pd.Series, total: pd.Series) -> pd.Series:
-    pcts = countsToProbabilities(counts, total)
-    pcts = probabilitiesToPercentages(pcts)
+def countsToPercentagesUdf(counts: pd.Series, total: pd.Series) -> pd.Series:
+    pcts = countsToProbabilitiesUdf(counts, total)
+    pcts = probabilitiesToPercentagesUdf(pcts)
     return pcts
 
 @sparkF.pandas_udf(returnType=sparkT.FloatType())
-def countsToProbabilities(counts: pd.Series, total: pd.Series) -> pd.Series:
+def countsToProbabilitiesUdf(counts: pd.Series, total: pd.Series) -> pd.Series:
     return ((counts / total))
 
 @sparkF.pandas_udf(returnType=sparkT.FloatType())
-def probabilitiesToPercentages(counts: pd.Series) -> pd.Series:
+def probabilitiesToPercentagesUdf(counts: pd.Series) -> pd.Series:
     return ((counts * 100))
 
 @sparkF.pandas_udf(returnType=sparkT.IntegerType())
-def percentagesToCounts(pcts: pd.Series, total: pd.Series) -> pd.Series:
-    counts = percentagesToProbabilities(pcts)
-    counts = probabilitiesToCounts(counts, total)
+def percentagesToCountsUdf(pcts: pd.Series, total: pd.Series) -> pd.Series:
+    counts = percentagesToProbabilitiesUdf(pcts)
+    counts = probabilitiesToCountsUdf(counts, total)
     return counts
 
 @sparkF.pandas_udf(returnType=sparkT.FloatType())
-def percentagesToProbabilities(counts: pd.Series) -> pd.Series:
+def percentagesToProbabilitiesUdf(counts: pd.Series) -> pd.Series:
     return ((counts / 100))
 
 @sparkF.pandas_udf(returnType=sparkT.IntegerType())
-def probabilitiesToCounts(counts: pd.Series, total: pd.Series) -> pd.Series:
+def probabilitiesToCountsUdf(counts: pd.Series, total: pd.Series) -> pd.Series:
     return ((counts * total))
 
 @sparkF.pandas_udf(returnType=sparkT.FloatType())
-def kmersToComplexity(kmer: pd.Series) -> pd.Series:
+def kmersToComplexityUdf(kmer: pd.Series) -> pd.Series:
     f = lambda x: (len(zlib.compress(x.encode())) - len(x.encode()))
     kmer = kmer.apply(f)
     return kmer
 
-def countsToCentralisedCounts(oKmerDf, eKmerDf):
-    oKmerDf = _joinCounts(oKmerDf, eKmerDf)
-
-    ## See Reinert et al. (2009)
-    ## Xw = Xw - N
-    ##  N = (len(X) - k + 1) * P(w)
-    eCount  = oKmerDf['eCount'] * oKmerDf[TOTAL_COL_NAME]
-    oKmerDf[COUNT_COL_NAME] = oKmerDf['oCount'] - eCount
-    oKmerDf = oKmerDf[[*KMERDF_COL_NAMES, KMER_COL_NAME, COUNT_COL_NAME]]
-    return oKmerDf
-
-def countsToStandardisedCounts(oKmerDf, eKmerDf):
-    oKmerDf = _joinCounts(oKmerDf, eKmerDf)
-
-    ## See Reinert et al. (2009) & Ren et al. (2013)
-    ## Xw = (Xw - N) / sqrt(N)
-    ##  N = (len(X) - k + 1) * P(w)
-    ## Not 100% sure whether this is the correct formula
-    eCount = oKmerDf['eCount'] * oKmerDf[TOTAL_COL_NAME]
-    oKmerDf[COUNT_COL_NAME] = np.divide((oKmerDf['oCount'] - eCount), np.sqrt(N))
-    oKmerDf[COUNT_COL_NAME] = oKmerDf[COUNT_COL_NAME].fillna(0)
-    oKmerDf = oKmerDf[[*KMERDF_COL_NAMES, KMER_COL_NAME, COUNT_COL_NAME]]
-    return kmerCount
-
-
-
 #------------------- Protected Classes & Functions ------------#
-
-def observedToExpected(kmerCount, **kwargs):
-    method = kwargs.pop('method', 'MCM')
-
-    if (method == 'ZOM'):
-        oImerCount = kwargs.pop('oImerCount')
-        kmerCount  = _observedToExpectedZOM(kmerCount, oImerCount)
-
-    else:
-        raise NotImplementedError("Not implemented")
-
-    return kmerCount
 
 #------------------- Private Classes & Functions ------------#
 
-def _joinCounts(oKmerDf, eKmerDf):
-    oKmerDf = oKmerDf.rename(columns={COUNT_COL_NAME:'oCount'})
-    eKmerDf = eKmerDf.rename(columns={COUNT_COL_NAME:'eCount'}) \
-                     .drop(columns=[TOTAL_COL_NAME, FILE_COL_NAME])
-
-    ## Join tables
-    cond    = [SEQID_COL_NAME, KMER_COL_NAME]
-    oKmerDf = oKmerDf.merge(eKmerDf, on=cond, how='outer')
-
-    ## Fix up some of the values
-    colNames = [TOTAL_COL_NAME, FILE_COL_NAME]
-    oKmerDf[colNames] = oKmerDf[colNames].fillna(method='ffill')
-    oKmerDf['oCount'] = oKmerDf['oCount'].fillna(0)
-    return oKmerDf
-
-def _observedToExpectedZOM(oKmerCount, oImerCount):
-    colNames    = oKmerCount.columns.tolist()
-    kmerLength  = len(colNames[0])
-    eKmerCount  = None
-
-    ## We can only calculate the expected ZOM counts
-    ## for K-mers > 1
-    if (kmerLength > 1):
-        eKmerCount = (_getExpectedZOM(c, oImerCount) for c in colNames)
-        eKmerCount = pd.concat(eKmerCount, axis=1)
-
-    return eKmerCount
-
-def _getExpectedZOM(c, oImerCount):
-    cols = [oImerCount[x] for x in c]
-
-    f = lambda x,y: x * y
-    eKmerCount = functools.reduce(f, cols)
-    eKmerCount = eKmerCount.rename(c)
-    return eKmerCount
+def _countsToProbabilities(kmerPdf):
+    total = kmerPdf[COUNT_COL_NAME].sum()
+    kmerPdf[COUNT_COL_NAME] = kmerPdf[COUNT_COL_NAME] / total
+    return kmerPdf
 
 #------------------- Main -----------------------------------#
 

@@ -23,7 +23,7 @@ from .constants import *
 
 def detect(kmerCount, algo, **kwargs):
     algos   = _getAlgorithms(algo, **kwargs)
-    labels  = _getLabels(algos, kmerCount) 
+    labels  = _getLabels(algos, kmerCount)
 
     args = ['{}:{}'.format(k, v) for k, v in kwargs.items()]
     args = '_'.join(args)

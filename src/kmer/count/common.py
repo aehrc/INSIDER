@@ -28,43 +28,27 @@ frequency biases due to different strands.
 # Standard library imports
 
 # External imports
-import itertools
+import pandas as pd
+import pyspark.sql.functions as F
+import pyspark.sql.types as T
 
 # Internal imports
-from .constants import *
+from ..common import *
 
 #------------------- Constants ------------------------------#
 
-NUCLEOTIDES = {'A':0, 'C':1, 'G':2, 'T':3}
+## Maximum number of output files
+MAX_N_FILES = 16
+
+## Maximum number of FASTA/FASTQ entries per Partition
+CHUNK_SIZE = 1000000
+
+## Number of Partitions multiplier for Spark
+N_PARTS_MULTI = 6
 
 #------------------- Public Classes & Functions -------------#
 
 #------------------- Protected Classes & Functions ------------#
-
-def getExpectedSequences(kmerLength):
-
-    """
-    Description:
-        Generates a list of all possible Kmer sequences of length K.
-
-    Args:
-        kmerLength (int):
-            Length of Kmers. Must be a positive integer.
-
-    Returns:
-        kmerSeqs (generator):
-            List of all possible Kmer sequences.
-
-    Raises:
-        ValueError:
-            If kmerLength is not a positive integer.
-    """
-
-    f = itertools.product(NUCLEOTIDES.keys(), repeat=kmerLength)
-    return (''.join(c) for c in f)
-
-def getExpectedTotal(kmerLength):
-    return (4 ** kmerLength)
 
 def getObservedSequences(seq, kmerLength):
 
@@ -91,30 +75,6 @@ def getObservedSequences(seq, kmerLength):
 def getObservedTotal(seq, kmerLength):
     return len(seq) - kmerLength + 1
 
-def getMCMCounts(kImerPdf, kIImerPdf):
-    lkImerPdf = kImerPdf.copy()
-    rkImerPdf = kImerPdf.copy()
-
-    lkImerPdf[SEQID_COL_NAME] = lkImerPdf[KMER_COL_NAME].str[1:]
-    rkImerPdf[SEQID_COL_NAME] = rkImerPdf[KMER_COL_NAME].str[:-1]
-    kIImerPdf[SEQID_COL_NAME] = kIImerPdf[KMER_COL_NAME]
-
-    kmerPdf = lkImerPdf.merge(rkImerPdf, on=SEQID_COL_NAME, how='inner')
-    kmerPdf = kmerPdf.merge(kIImerPdf, on=SEQID_COL_NAME, how='inner')
-    kmerPdf = kmerPdf.drop(columns=[SEQID_COL_NAME, 'total_x', 'total_y', TOTAL_COL_NAME])
-    kmerPdf.columns = ['lKmer', 'lProb', 'rKmer', 'rProb', 'mKmer', 'mProb']
-
-    ## The total number of Kmers doesn't make much sense for expected counts
-    ## because:
-    ##  * Expected counts are not always integer numbers
-    ##  * Expected counts / sum(expected counts) != expected probability
-    kmerPdf[SEQID_COL_NAME] = kImerPdf[SEQID_COL_NAME].unique()[0]
-    kmerPdf[TOTAL_COL_NAME] = 0
-    kmerPdf[KMER_COL_NAME]  = kmerPdf['lKmer'] + kmerPdf['rKmer'].str[-1]
-    kmerPdf[COUNT_COL_NAME] = (kmerPdf['lProb'] * kmerPdf['rProb']) / kmerPdf['mProb']
-    kmerPdf = kmerPdf[[SEQID_COL_NAME, TOTAL_COL_NAME, KMER_COL_NAME, COUNT_COL_NAME]]
-    return kmerPdf
-
 def getValidRows(kmerSdf):
 
     """
@@ -138,6 +98,31 @@ def getValidRows(kmerSdf):
     nStr = ''.join(NUCLEOTIDES.keys())
     p    = '^[' + nStr + ']+$'
     return kmerSdf.filter(kmerSdf.kmer.rlike(p))
+
+def getExpectedCounts(kImerDf, kIImerDf, kImerLength, kIImerLength):
+    ## Join the tables
+    cond   = (F.substring(kImerDf.kImer, 2, kIImerLength) == kIImerDf.kIImer)
+    kmerDf = kImerDf.join(kIImerDf, on=[SEQID_COL_NAME, SEQLEN_COL_NAME], how='full') \
+        .filter(cond) \
+        .withColumnRenamed('kImer', 'preKmer').withColumnRenamed('kImerCount', 'preKmerCount') \
+        .withColumnRenamed('kIImer', 'inKmer').withColumnRenamed('kIImerCount', 'inKmerCount')
+
+    cond   = (F.substring(kImerDf.kImer, 1, kIImerLength) == kmerDf.inKmer)
+    kmerDf = kmerDf.join(kImerDf, on=[SEQID_COL_NAME, SEQLEN_COL_NAME], how='full') \
+        .filter(cond) \
+        .withColumnRenamed('kImer', 'suffKmer').withColumnRenamed('kImerCount', 'suffKmerCount')
+
+    ## Calculate the Expected counts
+    f = (F.col('preKmerCount') * F.col('suffKmerCount')) / F.col('inKmerCount')
+    kmerDf = kmerDf.withColumn(COUNT_COL_NAME, f)
+    kmerDf = kmerDf.withColumn(KMER_COL_NAME,
+        F.concat(F.substring(kmerDf.preKmer, 1, 1),
+            kmerDf.inKmer, F.substring(kmerDf.suffKmer, kImerLength, 1)))
+
+    ## Return the columns we want
+    colNames = [SEQID_COL_NAME, SEQLEN_COL_NAME, KMER_COL_NAME, COUNT_COL_NAME]
+    kmerDf   = kmerDf.select(colNames)
+    return kmerDf
 
 #------------------- Private Classes & Functions ------------#
 

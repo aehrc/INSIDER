@@ -9,25 +9,22 @@
 # External imports
 
 # Internal imports
-# from .density import run
-
 from .cluster import assign
+from .cluster import assignConsensus
+from .cluster import calculatePurity
 from .cluster import visualiseHierarchicalClusters
 
 from .feature import fastTsneReduce
 from .feature import scale
 from .feature import sklearnReduce
-from .feature import sparkReduce
+from .feature import sparkIncrementalPcaReduce
+from .feature import sparkPcaReduce
 from .feature import visualisePcaPerformance
 from .feature import visualiseTsnePerformance
 
 from .outlier import detect
 
 from .constants import *
-from .common import filterByFeatureRange
-from .common import filterByFilename
-from .common import filterByOutlier
-from .common import getMLColumns
 
 #------------------- Constants ------------------------------#
 

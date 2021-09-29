@@ -1,0 +1,22 @@
+name: insider_env
+
+channels:
+  - bioconda
+  - defaults
+  - pyviz
+
+dependencies:
+  - biopython
+  - bokeh
+  - colorcet
+  - holoviews
+  - matplotlib
+  - networkx
+  - numpy
+  - pandas
+  - pysam
+  - pyspark=3
+  - python=3.7
+  - scikit-learn
+  - scipy
+  - statsmodels

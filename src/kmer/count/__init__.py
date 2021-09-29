@@ -13,8 +13,6 @@ from .combined import setup
 from .combined import getCounts
 from .combined import cleanup
 
-from .sequential import getSeqRecs
-
 from .split import setup
 from .split import getCounts
 from .split import cleanup

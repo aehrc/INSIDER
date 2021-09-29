@@ -7,22 +7,30 @@
 # Standard library imports
 
 # External imports
-import pandas as pd
-import pyspark.sql.functions as sparkF
-from pyspark.sql import SparkSession
 
 # Internal imports
-from .constants import *
 
 #------------------- Constants ------------------------------#
 
-REV_COMP = {'A':'T', 'T':'A', 'C':'G', 'G':'C'}
+## Column names
+SEQID_COL_NAME   = 'seqId'
+SEQLEN_COL_NAME  = 'seqLen'
+KMER_COL_NAME    = 'kmer'
+COUNT_COL_NAME   = 'count'
+FILE_COL_NAME    = 'filename'
+CID_COL_NAME     = 'ClusterId'
+
+UID_COL_NAME     = 'uId'
+SIGID_COL_NAME   = 'sigId'
+
+KMERDF_SEQINFO_COL_NAMES = [SEQID_COL_NAME, SEQLEN_COL_NAME, FILE_COL_NAME]
+KMERDF_COL_NAMES         = [*KMERDF_SEQINFO_COL_NAMES, KMER_COL_NAME, COUNT_COL_NAME]
+
+## Base infomation
+NUCLEOTIDES = {'A':0, 'C':1, 'G':2, 'T':3}
+REV_COMP    = {'A':'T', 'T':'A', 'C':'G', 'G':'C'}
 
 #------------------- Public Classes & Functions -------------#
-
-def partitionPdfByRows(pdf, numRows):
-    return (pdf.iloc[i:i+numRows, :].reset_index(drop=True)
-            for i in range(0, len(pdf), numRows))
 
 def getReverseComplement(seq):
     bases  = reversed(list(seq))
@@ -30,40 +38,60 @@ def getReverseComplement(seq):
     revSeq = ''.join(bases)
     return revSeq
 
-def getOuterKmers(kmerSdf):
-    ss = SparkSession.getActiveSession()
-    if (ss is None):
-        raise EnvironmentError("Must have an active Spark session")
+def getExpectedSequences(kmerLength):
 
-    ## Find Kmers that are in some but not all sequences.
-    ## This is effectively an outer join, but we do this by counting
-    ## the number of sequences containing each Kmer.
-    ## If the count != total number of sequences, then we've found a Kmer
-    ## that isn't in every sequence.
-    nSeqs  = kmerSdf.select(SEQID_COL_NAME).distinct().count()
-    oKmers = kmerSdf.groupby(KMER_COL_NAME).count() \
-                    .filter(sparkF.col('count') != nSeqs) \
-                    .select(KMER_COL_NAME)
-    oKmers = oKmers.rdd.flatMap(lambda x: x).collect()
-    return oKmers
+    """
+    Description:
+        Generates a list of all possible Kmer sequences of length K.
 
-def addZeroCounts(key, kmerPdf, oKmers):
-    ## Find zero count Kmers using set difference
-    currKmers = kmerPdf[KMER_COL_NAME].unique()
-    zcKmers   = set(oKmers).difference(currKmers)
+    Args:
+        kmerLength (int):
+            Length of Kmers. Must be a positive integer.
 
-    ## Construct dataframe of zero count Kmers
-    zcKmers   = pd.DataFrame([zcKmers])
-    zcKmers   = zcKmers.T
-    zcKmers.columns = [KMER_COL_NAME]
-    zcKmers[SEQID_COL_NAME] = str(key[0])
-    zcKmers[COUNT_COL_NAME] = 0
-    zcKmers[TOTAL_COL_NAME] = kmerPdf[TOTAL_COL_NAME].unique()[0]
-    zcKmers[FILE_COL_NAME]  = kmerPdf[FILE_COL_NAME].unique()[0]
+    Returns:
+        kmerSeqs (generator):
+            List of all possible Kmer sequences.
 
-    ## Union the tables
-    kmerPdf = pd.concat([kmerPdf, zcKmers])
-    return kmerPdf
+    Raises:
+        ValueError:
+            If kmerLength is not a positive integer.
+    """
+
+    f = itertools.product(NUCLEOTIDES.keys(), repeat=kmerLength)
+    return (''.join(c) for c in f)
+
+def getExpectedTotal(seq_or_kLen):
+    ## Check whether we're dealing with a Kmer sequence
+    ## or a Kmer length
+    if (isinstance(seq_or_kLen, str)):
+        seq = seq_or_kLen
+        ## Check whether the Kmer sequence is paired with its reverse
+        ## complement (i.e., FWD-REV)
+        if ('-' in seq):
+            kmer = seq.split('-')[0]
+            kLen = len(kmer)
+            ## Check whether the length of the Kmer sequence is even or odd
+            if (kLen % 2 == 0):
+                ## Even K-mer lengths can generate palindromes which
+                ## changes the total number of possible K-mers.
+                ## Based on formulas reported in:
+                ## * Apostolou-Karampelis et al. (2019)
+                x = (2 * kLen) - 1
+                y = (kLen - 1)
+                t = (2 ** x) + (2 ** y)
+                return t
+
+            else:
+                t = (4 ** kLen) / 2
+                return int(t)
+
+        else:
+            kLen = len(seq)
+            return (4 ** kLen)
+
+    else:
+        kLen = seq_or_kLen
+        return (4 ** kLen)
 
 #------------------- Protected Classes & Functions ------------#
 

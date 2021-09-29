@@ -10,12 +10,11 @@ import random
 from operator import add
 
 # External imports
-import pyspark.sql.functions as sparkF
-import pyspark.sql.types as sparkT
+import pyspark.sql.functions as F
+import pyspark.sql.types as T
 from pyspark.sql import SparkSession
 
 # Internal imports
-from .constants import *
 from .common import *
 from .. import transform
 
@@ -37,35 +36,31 @@ def setup(rdd):
 
 def getCounts(rdd, kmerLength, ignoreNs, countExp):
     ss  = SparkSession.getActiveSession()
-    rdd = rdd.map(lambda x: (x.id, str(x.seq).upper()))
-
     if (ss is None):
         raise EnvironmentError("Must have an active Spark session")
 
-    if (countExp == 'ZOM'):
-        raise NotImplementedError('ZOM counts not implemented!')
-
-    elif (countExp == 'MCM'):
-        ## P(W) = [P(W[0:K-1]) * P(W[1:K])] / P(W[1:K-1])
-        if (kmerLength < 3):
-            raise ValueError('Cannot calculate counts for kmerLength < 3')
-
+    rdd = rdd.map(lambda x: (x.id, str(x.seq).upper()))
+    if (countExp):
+        print("Expected counts")
         kImerLength  = kmerLength - 1
         kIImerLength = kmerLength - 2
 
         kImerDf   = _getObservedCounts(rdd, kImerLength, ignoreNs)
-        total     = _getTotal(kImerDf.rdd)
-        kImerDf   = _createKmerDf(kImerDf, total, asCounts=False)
+        seqLength = _getSeqLength(rdd)
+        kImerDf   = _createKmerDf(kImerDf, seqLength)
+        kImerDf   = kImerDf.withColumnRenamed(KMER_COL_NAME, 'kImer') \
+            .withColumnRenamed('count', 'kImerCount')
 
         kIImerDf  = _getObservedCounts(rdd, kIImerLength, ignoreNs)
-        total     = _getTotal(kIImerDf.rdd)
-        kIImerDf  = _createKmerDf(kIImerDf, total, asCounts=False)
+        seqLength = _getSeqLength(rdd)
+        kIImerDf  = _createKmerDf(kIImerDf, seqLength)
+        kIImerDf  = kIImerDf.withColumnRenamed(KMER_COL_NAME, 'kIImer') \
+            .withColumnRenamed('count', 'kIImerCount')
 
-        kmerDf    = kImerDf.groupby(kImerDf.id) \
-                           .cogroup(kIImerDf.groupby(kIImerDf.id)) \
-                           .applyInPandas(getMCMCounts, schema=kImerDf.schema)
+        kmerDf = getExpectedCounts(kImerDf, kIImerDf, kImerLength, kIImerLength)
 
     else:
+        print("Observed counts")
         ## **********
         ## *** This is (probably) the "best" approach for combined counts.
         ## *** RDD ReduceByKey runs better than DataFrame GroupBy.
@@ -79,9 +74,9 @@ def getCounts(rdd, kmerLength, ignoreNs, countExp):
         ## ***  * Explicitly defining the schema
         ## ***  * Repartitioning the DataFrame before grouping
         ## **********
-        kmerDf   = _getObservedCounts(rdd, kmerLength, ignoreNs)
-        total    = _getTotal(kmerDf.rdd)
-        kmerDf   = _createKmerDf(kmerDf, total)
+        kmerDf    = _getObservedCounts(rdd, kmerLength, ignoreNs)
+        seqLength = _getSeqLength(rdd)
+        kmerDf    = _createKmerDf(kmerDf, seqLength)
 
     ## Group (K, V) pairs. This makes reading the files a bit easier.
     kmerDf = _pivot(kmerDf, kmerLength)
@@ -126,37 +121,24 @@ def _getKmerRdd(rdd, kmerLength):
     ##           => (kmerSeq, 1)
     ##           => (kmerSeq, count)
     f = lambda x: getObservedSequences(x, kmerLength)
-    kmerRdd = rdd.flatMapValues(f) \
-                 .map(lambda x: (x[1], 1)) \
-                 .reduceByKey(add) \
-                 .map(lambda x: (0, *x))
-    kmerRdd.cache()
+    kmerRdd = rdd.flatMapValues(f).map(lambda x: (x[1], 1)) \
+        .reduceByKey(add).map(lambda x: (0, *x))
     ## We only count Kmers that occur at least once. Kmers that
     ## do not occur (zero counts) are ignored, but need to be
     ## added when we're analysing results. This will save us quite
     ## a bit of space.
+    kmerRdd.cache()
     return kmerRdd
 
-def _getTotal(rdd):
-    ## Get the total number of Kmers across all records
-    ## (ID, kmerSeq, count) => count
-    ##                      => total
-    f = lambda x: x[2]
-    total = rdd.map(f).reduce(add)
-    return total
+def _getSeqLength(rdd):
+    ## (ID, Seq) => (ID, len(Seq))
+    seqLength = rdd.map(lambda x: len(x[1])).reduce(add)
+    return seqLength
 
-def _createKmerDf(kmerDf, total, asCounts=True):
-    if (asCounts):
-        colNames = [SEQID_COL_NAME, sparkF.lit(total).alias(TOTAL_COL_NAME),
-                    KMER_COL_NAME, COUNT_COL_NAME]
-        kmerDf   = kmerDf.select(colNames)
-
-    else:
-        f        = transform.convert.countsToProbabilities(COUNT_COL_NAME, sparkF.lit(total))
-        colNames = [SEQID_COL_NAME, sparkF.lit(total).alias(TOTAL_COL_NAME),
-                    KMER_COL_NAME, f.alias(COUNT_COL_NAME)]
-        kmerDf   = kmerDf.select(colNames)
-
+def _createKmerDf(kmerDf, seqLength):
+    colNames = [SEQID_COL_NAME, F.lit(seqLength).alias(SEQLEN_COL_NAME),
+                KMER_COL_NAME, COUNT_COL_NAME]
+    kmerDf   = kmerDf.select(colNames)
     return kmerDf
 
 def _pivot(kmerDf, kmerLength):
@@ -173,15 +155,15 @@ def _pivot(kmerDf, kmerLength):
     ## Replace the ID column to something
     ## that can be used for grouping
     ## (ID, Kmer, Percent, *) => (ID, [Kmer -> Percent], *)
-    f        = sparkF.round(sparkF.rand()*(kmerLength-1))
-    kmerDf   = kmerDf.select(f.alias(SEQID_COL_NAME), *cols)
-    kmerDf   = transform.agg.countsToDict(kmerDf)
+    f      = F.round(F.rand()*(kmerLength-1))
+    kmerDf = kmerDf.select(f.alias(SEQID_COL_NAME), *cols)
+    kmerDf = transform.agg.countsToDict(kmerDf)
 
     ## Replace the ID column to something
     ## more suitable for Identification purposes
     cols.remove(COUNT_COL_NAME)
-    f        = sparkF.lit(random.randint(0, 100000))
-    kmerDf   = kmerDf.select(f.alias(SEQID_COL_NAME).cast(sparkT.StringType()), *cols)
+    f      = F.lit(random.randint(0, 100000))
+    kmerDf = kmerDf.select(f.alias(SEQID_COL_NAME).cast(T.StringType()), *cols)
     return kmerDf
 
 #------------------- Main -----------------------------------#

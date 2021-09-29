@@ -17,21 +17,19 @@ We can reduce the number of samples by:
 #------------------- Dependencies ---------------------------#
 
 # Standard library imports
-import hashlib
-from operator import add
 import zlib
 
 # External imports
 import numpy as np
 import pandas as pd
-import pyspark.sql.functions as sparkF
+import pyspark.sql.functions as F
 from pyspark.sql import SparkSession
 from pyspark.ml.feature import VectorAssembler
 from pyspark.ml.stat import Correlation
 
 # Internal imports
-from .convert import kmersToComplexity
-from ..constants import *
+from .convert import kmersToComplexityUdf
+from .common import *
 
 #------------------- Constants ------------------------------#
 
@@ -59,12 +57,11 @@ def removeConstantCounts(df):
         ## (i.e., their standard deviation == 0)
         kmerSdf      = df
         constantCols = kmerSdf.groupby(KMER_COL_NAME) \
-                              .agg(sparkF.stddev(COUNT_COL_NAME)) \
-                              .filter(sparkF.col('stddev_samp(count)') == 0) \
+                              .agg(F.stddev(COUNT_COL_NAME)) \
+                              .filter(F.col('stddev_samp(count)') == 0) \
                               .select(KMER_COL_NAME)
 
-        kmerSdf = kmerSdf.join(constantCols,
-            on=KMER_COL_NAME, how="left_anti")
+        kmerSdf = kmerSdf.join(constantCols, on=KMER_COL_NAME, how="left_anti")
         return kmerSdf
 
 def removeCorrelatedCounts(df, corr=0.90):
@@ -88,7 +85,7 @@ def removeCorrelatedCounts(df, corr=0.90):
         if (ss is None):
             raise EnvironmentError("Must have an active Spark session")
 
-        raise NotImplementedError("Not Implemented properly.")
+        raise NotImplementedError("Not Implemented properly")
 
         # df = ss.createDataFrame(kmerCount)
 
@@ -154,22 +151,22 @@ def removeRepetitiveKmers(df):
         ## and after compression. See Sims et al. (2009).
         kmerSdf     = df
 
-        f = kmersToComplexity(KMER_COL_NAME)
+        f = kmersToComplexityUdf(KMER_COL_NAME)
         complexCols = kmerSdf.select(KMER_COL_NAME).distinct() \
                              .withColumn('complexity', f)
 
-        threshold   = complexCols.select(sparkF.min('complexity')).collect()[0][0]
-        complexCols = complexCols.filter(sparkF.col('complexity') == threshold) \
+        threshold   = complexCols.select(F.min('complexity')).collect()[0][0]
+        complexCols = complexCols.filter(complexCols.complexity == threshold) \
                                  .select(KMER_COL_NAME)
 
         kmerSdf = kmerSdf.join(complexCols, on=KMER_COL_NAME, how="left_anti")
         return kmerSdf
 
-def removeShortSequences(kmerSdf, n=2):
+def removeShortSequences(kmerSdf, n=1):
     ## Find relatively short sequences (i.e., len(Seq) < threshold)
-    kmerLength = len(kmerSdf.select(KMER_COL_NAME).first()[0])
-    minLen     = (4 ** kmerLength) * n
-    kmerSdf    = kmerSdf.filter(kmerSdf.total > minLen)
+    kLen    = len(kmerSdf.select(KMER_COL_NAME).first()[0])
+    minLen  = (4 ** kLen) * n
+    kmerSdf = kmerSdf.filter(kmerSdf.seqLen > minLen)
     return kmerSdf
 
 #------------------- Protected Classes & Functions ------------#

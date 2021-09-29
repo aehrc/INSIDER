@@ -14,7 +14,6 @@ Spectral Clustering looks really good on filtered data, but very inefficient!
 DBSCAN is basically a faster version of Spectral Clustering, whereas OPTICS
 is a more efficient version of DBSCAN. Unfortunately, I always encounter
 a division by 0 error with OPTICS!
-
 '''
 
 #------------------- Dependencies ---------------------------#
@@ -35,53 +34,77 @@ from .constants import *
 
 #------------------- Public Classes & Functions -------------#
 
-def assign(kmerCount, algo, **kwargs):
-    algos  = _getAlgorithms(algo, **kwargs)
-    labels = _getLabels(algos, kmerCount)
+def assign(kmerCount, cMethod, appendArgs=False, **kwargs):
+    algo = _getAlgorithm(cMethod, **kwargs)
 
-    args = ['{}:{}'.format(k, v) for k, v in kwargs.items()]
-    args = '_'.join(args)
-    colName = '{}_{}_{}'.format(labels.columns.tolist()[0], algo, args)
-    labels.columns = [colName]
+    ## Perform clustering
+    (algo, labels) = _fitPredict(algo, kmerCount)
+    labels = _formatLabels(labels)
+    if (appendArgs):
+        labels = _appendArgs(labels, cMethod, **kwargs)
+
     return labels
 
-def visualiseHierarchicalClusters(kmerCount, **kwargs):
-    algo  = _getAlgorithms(algo='AGGLO', **kwargs)[0]
-    algo  = _fitPredict(algo, kmerCount)[0]
-    d     = _getDendrogram(algo, truncate_mode='level', p=3)
+def assignConsensus(labels, appendArgs=False, **kwargs):
+    def _CC(aCC, bCC):
+        ## Calculate the number of times sequence A is in the
+        ## same cluster as sequence B and convert the
+        ## proportion (i.e., similarity) into a distance metric
+        m = np.equal(aCC, bCC)
+        p = np.sum(m) / len(m)
+        p = 1 - p
+        return p
+
+    ## Suggested parameters:
+    ## eps=0.5, min_samples=1
+    cLabels = assign(labels, 'DBSCAN', appendArgs=appendArgs,
+        metric=_CC, min_samples=1, **kwargs)
+    return cLabels
+
+def calculatePurity(df):
+    ## Assuming the dataframe only has 2 columns of [<COL1>, Cluster]
+    cDf = df.value_counts().reset_index()
+    cDf.columns = [df.columns[0], 'Cluster', 'count']
+
+    ## Calculate the purity of the clusters
+    cDf = cDf.pivot(index='Cluster', columns=df.columns[0], values='count')
+    cDf = cDf.fillna(0)
+    p    = np.sum(np.amax(cDf, axis=1)) / np.sum(np.sum(cDf))
+    return p
+
+def visualiseHierarchicalClusters(kmerCount, distance_threshold, **kwargs):
+    algo = _getAlgorithm('AGGLO', n_clusters=None,
+        distance_threshold=distance_threshold, **kwargs)
+    (algo, labels) = _fitPredict(algo, kmerCount)
+    d    = _getDendrogram(algo, labels=kmerCount.index, leaf_rotation=90,
+        truncate_mode='level', p=20)
     return d
 
 #------------------- Private Classes & Functions ------------#
 
-def _getAlgorithms(algo, **kwargs):
-    if (algo == 'KMEANS'):
-        algos = [cluster.KMeans(**kwargs)]
+def _getAlgorithm(cMethod, **kwargs):
+    if (cMethod == 'KMEANS'):
+        algo = cluster.KMeans(**kwargs)
 
-    elif (algo == 'DBSCAN'):
-        algos = [cluster.DBSCAN(**kwargs)]
+    elif (cMethod == 'DBSCAN'):
+        algo = cluster.DBSCAN(**kwargs)
 
-    elif (algo == 'OPTICS'):
-        algos = [cluster.OPTICS(**kwargs)]
+    elif (cMethod == 'OPTICS'):
+        algo = cluster.OPTICS(**kwargs)
 
-    elif (algo == 'SPEC'):
-        algos = [cluster.SpectralClustering(**kwargs)]
+    elif (cMethod == 'SPEC'):
+        algo = cluster.SpectralClustering(**kwargs)
 
-    elif (algo == 'AGGLO'):
-        algos = [cluster.AgglomerativeClustering(**kwargs)]
+    elif (cMethod == 'AGGLO'):
+        algo = cluster.AgglomerativeClustering(**kwargs)
 
-    elif (algo == 'GMM'):
-        algos = [mixture.GaussianMixture(**kwargs)]
+    elif (cMethod == 'GMM'):
+        algo = mixture.GaussianMixture(**kwargs)
 
     else:
         raise NotImplementedError('Unknown algorithm')
 
-    return algos
-
-def _getLabels(algos, kmerCount):
-    f  = lambda x: _fitPredict(x, kmerCount)
-    ll = list(map(f, algos))
-    ## Return the first prediction
-    return ll[0][1]
+    return algo
 
 def _fitPredict(algo, kmerCount):
     algo.fit(kmerCount)
@@ -91,11 +114,20 @@ def _fitPredict(algo, kmerCount):
 
     else:
         l = algo.predict(kmerCount)
-        # print(algo.cluster_centers_)
 
-    l = np.reshape(l, (-1, 1))
-    l = pd.DataFrame(l, columns=[CLABEL_COL_NAME])
     return (algo, l)
+
+def _formatLabels(labels):
+    labels = np.reshape(labels, (-1, 1))
+    labels = pd.DataFrame(labels, columns=[CLABEL_COL_NAME])
+    return labels
+
+def _appendArgs(labels, cMethod, **kwargs):
+    args = ['{}:{}'.format(k, v) for k, v in kwargs.items()]
+    args = '_'.join(args)
+    colName = '{}_{}_{}'.format(labels.columns.tolist()[0], cMethod, args)
+    labels.columns = [colName]
+    return labels
 
 def _getDendrogram(model, **kwargs):
     counts = np.zeros(model.children_.shape[0])
