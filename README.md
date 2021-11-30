@@ -4,10 +4,10 @@ This repository contains scripts for detecting foreign DNA sequences in genomes.
 ## Requirements ##
 python >= 3.7.0, pyspark >= 3.0.0, scikit-learn >= 0.24.0, scipy >= 1.6.0, statsmodels >= 0.12.0
 
-Alternatively, create the conda environment: `conda create env -f environment.yml`
+Alternatively, create the conda environment: `conda create env -f environment.yml`.
 
 ## Quick start ##
-To run the INSIDER pipeline: `sh INSIDER_Pipeline.sh`
+To run the INSIDER pipeline: `sh INSIDER_Pipeline.sh`.
 
 ## Usage ##
 
@@ -22,7 +22,7 @@ python bin/calculate_kmer_frequencies.py \
     -o test_2mer
 ```
 
-For each sequence, extract 2-mers and count their frequencies. Ambigous bases (i.e., N's) are ignored)
+For each sequence, extract 2-mers and count their frequencies. Ambigous bases (i.e., N's) are ignored.
 
 ### Cluster K-mer frequencies
 
