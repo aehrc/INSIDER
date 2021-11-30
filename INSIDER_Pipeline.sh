@@ -86,4 +86,4 @@ time python insider_analyse.py \
     main \
     --freqDir ${OUTPUT_DIR}/${KMER_FREQ_DIR} \
     --cIdFile ${OUTPUT_DIR}/${CID_FILE}.txt \
-    -o ${OUTPUT_DIR}/${RESULTS_DIR}.txt
+    -o ${OUTPUT_DIR}/${RESULTS_DIR}
